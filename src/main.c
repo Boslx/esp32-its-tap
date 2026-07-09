@@ -13,7 +13,9 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "freertos/event_groups.h"
+#include "esp_timer.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_event.h"
@@ -65,11 +67,31 @@
 
 static const char *TAG = "C-ITS";
 
-#define TX_INTERVAL_MS 100
+#define TX_INTERVAL_MS 1000
 #define FRAME_BUF_SIZE 256
 #define NUM_FRAME_BUFS 2
 #define SEND_TASK_STACK 4096
 #define SEND_TASK_PRIORITY 5
+
+/* ---- RX (Promiscuous Mode) ---- */
+#define RX_QUEUE_LENGTH     10
+#define RX_PRINT_DATA_BYTES 64
+#define RX_PRINT_TASK_STACK 3072
+#define RX_PRINT_TASK_PRIORITY 3
+
+/* Small struct to transfer frame info from ISR callback to print task */
+typedef struct {
+    uint8_t  src_mac[6];
+    int16_t  rssi;
+    uint16_t len;
+    uint8_t  data[RX_PRINT_DATA_BYTES];
+} rx_frame_info_t;
+
+static QueueHandle_t rx_queue;
+static uint32_t dropped_rx_frames = 0;
+
+static void rx_print_task(void *pvParameters);
+static void its_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type);
 
 static void send_task(void *pvParameters);
 
@@ -391,6 +413,65 @@ static void send_task(void *pvParameters)
     }
 }
 
+/* Promiscuous mode RX callback — runs in ISR context.
+ * Copies frame info into a queue for safe printing in rx_print_task. */
+static void its_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type)
+{
+    const wifi_promiscuous_pkt_t *pkt = (const wifi_promiscuous_pkt_t *)buf;
+    const uint16_t frame_len = pkt->rx_ctrl.sig_len;
+
+    /* Skip frames that are too small to have a valid 802.11 header (24 bytes min) */
+    if (frame_len < 24) {
+        return;
+    }
+
+    rx_frame_info_t info;
+    memset(&info, 0, sizeof(info));
+
+    /* Source MAC is at offset 10 (Address 2) in the 802.11 header */
+    memcpy(info.src_mac, pkt->payload + 10, 6);
+    info.rssi = pkt->rx_ctrl.rssi;
+    info.len = frame_len;
+
+    /* Copy up to RX_PRINT_DATA_BYTES of the frame for hex dump */
+    uint16_t copy_len = (frame_len < RX_PRINT_DATA_BYTES) ? frame_len : RX_PRINT_DATA_BYTES;
+    memcpy(info.data, pkt->payload, copy_len);
+
+    /* ISR-safe: non-blocking send to queue */
+    BaseType_t higher_woken = pdFALSE;
+    if (xQueueSendFromISR(rx_queue, &info, &higher_woken) != pdTRUE) {
+        dropped_rx_frames++;
+    }
+
+    if (higher_woken) {
+        portYIELD_FROM_ISR();
+    }
+}
+
+/* Task: dequeue received frame info and print it */
+static void rx_print_task(void *pvParameters)
+{
+    (void)pvParameters;
+    rx_frame_info_t info;
+
+    while (1) {
+        if (xQueueReceive(rx_queue, &info, portMAX_DELAY) == pdTRUE) {
+            ESP_LOGI(TAG, "RX: len=%d rssi=%d src=%02X:%02X:%02X:%02X:%02X:%02X",
+                     info.len, info.rssi,
+                     info.src_mac[0], info.src_mac[1], info.src_mac[2],
+                     info.src_mac[3], info.src_mac[4], info.src_mac[5]);
+
+            ESP_LOG_BUFFER_HEX(TAG, info.data,
+                               (info.len < RX_PRINT_DATA_BYTES) ? info.len : RX_PRINT_DATA_BYTES);
+
+            if (dropped_rx_frames > 0) {
+                ESP_LOGW(TAG, "Dropped %lu RX frames (queue full)", dropped_rx_frames);
+                dropped_rx_frames = 0;
+            }
+        }
+    }
+}
+
 void app_main(void)
 {
     esp_log_level_set(TAG, ESP_LOG_VERBOSE);
@@ -428,6 +509,23 @@ void app_main(void)
     phy_change_channel(5900, 1, 0, 0);
 
     ESP_LOGI(TAG, "802.11p ready on 5900 MHz");
+
+    /* ---- RX setup: promiscuous mode on 5900 MHz ---- */
+    rx_queue = xQueueCreate(RX_QUEUE_LENGTH, sizeof(rx_frame_info_t));
+    if (rx_queue == NULL) {
+        ESP_LOGE(TAG, "Failed to create RX queue");
+    } else {
+        wifi_promiscuous_filter_t filter = {
+            .filter_mask = WIFI_PROMIS_FILTER_MASK_DATA | WIFI_PROMIS_FILTER_MASK_MGMT
+        };
+        ESP_ERROR_CHECK(esp_wifi_set_promiscuous_filter(&filter));
+        ESP_ERROR_CHECK(esp_wifi_set_promiscuous_rx_cb(its_rx_cb));
+        ESP_ERROR_CHECK(esp_wifi_set_promiscuous(true));
+        ESP_LOGI(TAG, "Promiscuous RX enabled on 5900 MHz");
+
+        xTaskCreate(rx_print_task, "rx_print", RX_PRINT_TASK_STACK,
+                    NULL, RX_PRINT_TASK_PRIORITY, NULL);
+    }
 
     xTaskCreate(send_task, "send_80211p", SEND_TASK_STACK,
                 own_mac, SEND_TASK_PRIORITY, NULL);
