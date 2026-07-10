@@ -30,6 +30,9 @@
 #include "modem_clocks.h"
 #include "frame_builder.h"
 
+#include "esp_system.h"
+#include "esp_heap_caps.h"
+
 static const char *TAG = "C-ITS";
 
 #define TX_INTERVAL_MS 1000
@@ -55,6 +58,15 @@ typedef struct
 
 static QueueHandle_t rx_queue;
 static uint32_t dropped_rx_frames = 0;
+static int64_t tx_count = 0;
+static int64_t rx_count = 0;
+
+/* Heartbeat task */
+#define HEARTBEAT_INTERVAL_MS 10000
+#define HEARTBEAT_TASK_STACK 2048
+#define HEARTBEAT_TASK_PRIORITY 1
+
+static void heartbeat_task(void *pvParameters);
 
 static void rx_print_task(void *pvParameters);
 static void its_rx_cb(void *buf, wifi_promiscuous_pkt_type_t type);
@@ -103,7 +115,6 @@ static void send_task(void *pvParameters)
     uint8_t frame_buf[NUM_FRAME_BUFS][FRAME_BUF_SIZE];
     int buf_idx = 0;
     uint16_t seq = 0;
-    int tx_count = 0;
 
     const uint8_t dummy_payload[] = {0xC0, 0x01, 0xD0, 0x0D};
 
@@ -145,7 +156,7 @@ static void send_task(void *pvParameters)
         if (result == ESP_OK)
         {
             tx_count++;
-            ESP_LOGI(TAG, "TX #%d: %d bytes, seq=%u", tx_count, frame_len, seq);
+            // ESP_LOGI(TAG, "TX #%d: %d bytes, seq=%u", tx_count, frame_len, seq);
         }
         else
         {
@@ -154,6 +165,28 @@ static void send_task(void *pvParameters)
 
         seq = (seq + 1) % 4096;
         vTaskDelay(pdMS_TO_TICKS(TX_INTERVAL_MS));
+    }
+}
+
+/* Heartbeat task: prints debug info every 10 seconds with a sequence number */
+static void heartbeat_task(void *pvParameters)
+{
+    uint32_t hb_seq = 0;
+    TickType_t last_wake = xTaskGetTickCount();
+
+    while (1)
+    {
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(HEARTBEAT_INTERVAL_MS));
+
+        uint32_t free_heap = esp_get_free_heap_size();
+        uint32_t min_free_heap = esp_get_minimum_free_heap_size();
+        int64_t uptime_ms = esp_timer_get_time() / 1000;
+        uint32_t uptime_s = (uint32_t)(uptime_ms / 1000);
+
+        ESP_LOGI(TAG, "[HB #%lu] uptime=%lus free_heap=%lu min_free=%lu tx=%lld rx=%lld rx_dropped=%lu",
+                 hb_seq, uptime_s, free_heap, min_free_heap, tx_count, rx_count, dropped_rx_frames);
+
+        hb_seq++;
     }
 }
 
@@ -205,6 +238,8 @@ static void rx_print_task(void *pvParameters)
     {
         if (xQueueReceive(rx_queue, &info, portMAX_DELAY) == pdTRUE)
         {
+            rx_count++;
+
             ESP_LOGI(TAG, "RX: len=%d rssi=%d src=%02X:%02X:%02X:%02X:%02X:%02X",
                      info.len, info.rssi,
                      info.src_mac[0], info.src_mac[1], info.src_mac[2],
@@ -281,4 +316,8 @@ void app_main(void)
 
     xTaskCreate(send_task, "send_80211p", SEND_TASK_STACK,
                 own_mac, SEND_TASK_PRIORITY, NULL);
+
+    xTaskCreate(heartbeat_task, "heartbeat", HEARTBEAT_TASK_STACK,
+                NULL, HEARTBEAT_TASK_PRIORITY, NULL);
+    ESP_LOGI(TAG, "Heartbeat task started (interval=%dms)", HEARTBEAT_INTERVAL_MS);
 }
