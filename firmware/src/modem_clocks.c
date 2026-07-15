@@ -2,7 +2,7 @@
  * Modem clock initialisation for ESP32-C5 802.11p (ITS-G5) operation.
  *
  * Must be called before esp_wifi_init() so the PHY I2C bus is clocked.
- * The register sequence is order-sensitive — see comments below.
+ * The register sequence is order-sensitive -- see comments below.
  */
 
 #include "soc/soc.h"

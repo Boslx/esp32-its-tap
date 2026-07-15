@@ -1,0 +1,21 @@
+[package]
+name = "its-g5-tap"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+bytes = "1"
+etherparse = "0.20.3"
+libwifi = "0.5.0"
+tokio = { version = "1", features = ["rt", "macros", "time", "io-util"] }
+tappers = { version = "0.4.2", features = ["tokio"] }
+tokio-serial = "5.5.0"
+serialport = "4"
+prost = "0.14.4"
+thiserror = "2.0.18"
+env_logger = "0.11.11"
+log = "0.4.33"
+
+[build-dependencies]
+prost-build = "0.14"

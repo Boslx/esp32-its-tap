@@ -1,0 +1,7 @@
+# nanopb options for interface.proto (package "its")
+# Limits the maximum size of 'bytes' fields so nanopb generates
+# fixed-size arrays (pb_bytes_array_t) instead of callbacks.
+
+its.Heartbeat.src_mac       max_size:6
+its.ReceivedFrame.src_mac   max_size:6
+its.Frame.frame_data        max_size:2304
