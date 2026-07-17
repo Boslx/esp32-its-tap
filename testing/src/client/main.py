@@ -59,27 +59,36 @@ def _unique_output_path(output_path: Path) -> Path:
 
 
 class ItsPcapNgWriter:
-    """Writes received 802.11 frames to a capture file."""
+    """Writes received 802.11 frames to a capture file.
+
+    The actual pcapng file is only created when the first frame is written,
+    so no empty capture files are left behind.
+    """
 
     def __init__(self, output_path: Path):
         self.output_path = _unique_output_path(output_path)
         self.frames_written = 0
-        self._writer = PcapNgWriter(str(self.output_path))
-        self._writer.linktype = DLT_IEEE802_11
-        self._writer.write_header(None)
-        print(f"Recording frames to {self.output_path}")
+        self._writer: PcapNgWriter | None = None
 
     def write(self, frame_data: bytes, timestamp_us: int) -> None:
+        if self._writer is None:
+            self._writer = PcapNgWriter(str(self.output_path))
+            self._writer.linktype = DLT_IEEE802_11
+            self._writer.write_header(None)
+            print(f"Recording frames to {self.output_path}")
         timestamp_sec = Decimal(timestamp_us) / Decimal(1_000_000)
         self._writer.write_packet(frame_data, sec=timestamp_sec)
         self.frames_written += 1
         self._writer.flush()
 
     def close(self) -> None:
-        self._writer.close()
-        if self.frames_written == 0 and self.output_path.exists():
-            self.output_path.unlink()
-        print(f"\nCapture: {self.frames_written} frames written to {self.output_path}")
+        if self._writer is not None:
+            self._writer.close()
+        print(f"\nCapture: {self.frames_written} frames written", end="")
+        if self.frames_written > 0:
+            print(f" to {self.output_path}")
+        else:
+            print()
 
 
 # ---------------------------------------------------------------------------
@@ -115,10 +124,14 @@ def _make_heartbeat_callback() -> object:
     def on_heartbeat(hb: pb.Heartbeat) -> None:
         nonlocal last_hb
         mac = ":".join(f"{b:02X}" for b in hb.src_mac)
+        ver = hb.version
+        hours, remainder = divmod(hb.uptime_s, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        uptime_str = f"{int(hours)}h {int(minutes)}m {int(seconds)}s"
         with lock:
             last_hb = hb
         print(
-            f"HB [#{hb.hb_seq}] uptime={hb.uptime_s}s  "
+            f"HB [#{hb.hb_seq}] v{ver}  uptime={uptime_str}  "
             f"heap={hb.free_heap / 1024:.0f}K  "
             f"min_heap={hb.min_free_heap / 1024:.0f}K  "
             f"TX={hb.tx_count}  RX={hb.rx_count}  dropped={hb.rx_dropped}  "
@@ -133,10 +146,7 @@ def _make_frame_callback(pcap_writer: ItsPcapNgWriter) -> object:
 
     def on_received_frame(rf: pb.ReceivedFrame) -> None:
         mac = ":".join(f"{b:02X}" for b in rf.src_mac)
-        print(
-            f"RX frame: len={len(rf.frame.frame_data)}  "
-            f"rssi={rf.rssi}dBm  src={mac}"
-        )
+        print(f"RX frame: len={len(rf.frame.frame_data)}  rssi={rf.rssi}dBm  src={mac}")
         pcap_writer.write(rf.frame.frame_data, rf.timestamp_us)
 
     return on_received_frame
@@ -145,8 +155,7 @@ def _make_frame_callback(pcap_writer: ItsPcapNgWriter) -> object:
 # ---------------------------------------------------------------------------
 # Send loop: replay complete 802.11 frames from a capture file
 # ---------------------------------------------------------------------------
-def _replay_loop(proto: SerialProtocol, frames: list[bytes],
-                 interval_ms: int) -> None:
+def _replay_loop(proto: SerialProtocol, frames: list[bytes], interval_ms: int) -> None:
     """Send each complete 802.11 frame to the board with the given interval.
     The board only overrides the Sequence Control field (bytes 22-23)."""
     total = len(frames)

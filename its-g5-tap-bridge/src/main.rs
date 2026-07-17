@@ -1,4 +1,8 @@
-use std::{io, sync::Arc};
+use std::{
+    io,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use clap::Parser;
 use log::{info, warn};
@@ -21,6 +25,10 @@ mod serial_proto;
 pub mod its_proto {
     include!(concat!(env!("OUT_DIR"), "/its.rs"));
 }
+
+/// Expected firmware version string reported by the board.
+/// The bridge logs a warning if the board reports a different version.
+const EXPECTED_FW_VERSION: &str = "1.1";
 
 use error::{Error, Result};
 use its_proto::{to_board::Msg, Frame as ProtoFrame, ToBoard};
@@ -197,11 +205,16 @@ fn fmt_mac(mac: &[u8]) -> String {
 
 /// Serial -> TAP: read framed protobuf from the serial port, decode
 /// `FromBoard` messages, convert 802.11 -> Ethernet, and inject into TAP.
-async fn serial_to_tap(mut port: impl AsyncReadExt + Unpin, tap: Arc<AsyncTap>) -> Result<()> {
+async fn serial_to_tap(
+    mut port: impl AsyncReadExt + Unpin,
+    tap: Arc<AsyncTap>,
+    last_hb: Arc<Mutex<Option<Instant>>>,
+) -> Result<()> {
     info!("Serial: listening");
 
     let mut decoder = FrameDecoder::new();
     let mut buf = [0u8; 2048];
+    let mut mismatch_warned = false;
 
     loop {
         let n = port.read(&mut buf).await?;
@@ -213,10 +226,23 @@ async fn serial_to_tap(mut port: impl AsyncReadExt + Unpin, tap: Arc<AsyncTap>) 
         for msg in msgs {
             match msg.msg {
                 Some(its_proto::from_board::Msg::Heartbeat(hb)) => {
+                    *last_hb.lock().unwrap() = Some(Instant::now());
+
+                    let version = hb.version.clone();
+
+                    if !mismatch_warned && version != EXPECTED_FW_VERSION {
+                        mismatch_warned = true;
+                        warn!(
+                            "Firmware version mismatch: board reports '{}', bridge expects '{}'",
+                            version, EXPECTED_FW_VERSION,
+                        );
+                    }
+
                     info!(
-                        "HB [#{}] uptime={}s  heap={}K  min_heap={}K  \
+                        "HB [#{}] v{}  uptime={}s  heap={}K  min_heap={}K  \
                          TX={}  RX={}  dropped={}  MAC={}",
                         hb.hb_seq,
+                        version,
                         hb.uptime_s,
                         hb.free_heap / 1024,
                         hb.min_free_heap / 1024,
@@ -280,7 +306,10 @@ async fn tap_to_serial(mut port: impl AsyncWriteExt + Unpin, tap: Arc<AsyncTap>)
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    env_logger::init();
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("warn"),
+    )
+    .init();
     let cli = Cli::parse();
 
     if let Err(e) = run(cli).await {
@@ -317,6 +346,7 @@ async fn run(cli: Cli) -> Result<()> {
     })?;
     info!("TAP device '{name_str}' is up. MAC: {}", fmt_mac(&own_mac));
     info!("Using DEFAULT_WIFI_META for Ethernet->802.11 conversion.");
+    info!("Expecting firmware version {}", EXPECTED_FW_VERSION);
 
     // -- Open serial port once, split into read/write halves --
     let serial_port = tokio_serial::new(&cli.serial, cli.baud)
@@ -326,13 +356,46 @@ async fn run(cli: Cli) -> Result<()> {
             baud: cli.baud,
             source,
         })?;
-    let (serial_rx, serial_tx) = tokio::io::split(serial_port);
+    let (serial_rx, mut serial_tx) = tokio::io::split(serial_port);
     info!("Serial: {} @ {} baud -- opened", cli.serial, cli.baud);
+
+    // -- Request heartbeat on startup to verify correct firmware --
+    info!("Requesting heartbeat from board...");
+    let hb_request = ToBoard {
+        msg: Some(Msg::RequestHb(true)),
+    };
+    let hb_wire = encode_to_board(&hb_request)?;
+    serial_tx.write_all(&hb_wire).await?;
+    info!("Heartbeat request sent, awaiting response...");
+
+    // -- Shared heartbeat state for watchdog --
+    let last_hb = Arc::new(Mutex::new(None::<Instant>));
+    let last_hb_watchdog = last_hb.clone();
+
+    // -- Heartbeat watchdog: warn if no heartbeat for > 3 intervals --
+    let hb_timeout = Duration::from_secs(35); // 3× interval + some slack
+    tokio::spawn(async move {
+        let mut check = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            check.tick().await;
+            let elapsed = last_hb_watchdog
+                .lock()
+                .unwrap()
+                .map(|t| t.elapsed())
+                .unwrap_or(Duration::from_secs(u64::MAX));
+            if elapsed > hb_timeout {
+                warn!(
+                    "No heartbeat for {:.0}s — the ESP32 may be dead or disconnected!",
+                    elapsed.as_secs(),
+                );
+            }
+        }
+    });
 
     // -- Launch bridge tasks --
     let tap_rx = tap.clone();
 
-    let s2t = tokio::spawn(serial_to_tap(serial_rx, tap_rx));
+    let s2t = tokio::spawn(serial_to_tap(serial_rx, tap_rx, last_hb));
     let t2s = tokio::spawn(tap_to_serial(serial_tx, tap.clone()));
 
     tokio::select! {

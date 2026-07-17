@@ -4,6 +4,9 @@
 #include <stddef.h>
 #include "interface.pb.h"
 
+/* Firmware version string included in heartbeat messages */
+#define FIRMWARE_VERSION "1.0.0"
+
 /* Set to ESP_LOGI to re-enable heartbeat/TX/RX frame logs */
 #ifndef CITS_LOGI
 #define CITS_LOGI(...) do {} while(0)

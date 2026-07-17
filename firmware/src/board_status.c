@@ -57,4 +57,6 @@ void board_get_heartbeat_data(its_Heartbeat *hb)
     hb->rx_dropped    = s_rx_dropped;
     memcpy(hb->src_mac.bytes, s_own_mac, 6);
     hb->src_mac.size = 6;
+    strncpy(hb->version, FIRMWARE_VERSION, sizeof(hb->version));
+    hb->version[sizeof(hb->version) - 1] = '\0';
 }

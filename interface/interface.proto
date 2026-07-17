@@ -6,49 +6,50 @@ package its;
 // Heartbeat - sent periodically from board -> PC
 // ----------------------------------------------
 message Heartbeat {
-    uint32 hb_seq        = 1;  // Incremented each heartbeat
-    uint32 uptime_s      = 2;  // Seconds since boot
-    uint32 free_heap     = 3;  // Current free heap [bytes]
-    uint32 min_free_heap = 4;  // Minimum free heap since boot [bytes]
-    int64  tx_count      = 5;  // Total frames transmitted
-    int64  rx_count      = 6;  // Total frames received
-    uint32 rx_dropped    = 7;  // Frames dropped on receive
-    bytes  src_mac       = 8;  // MAC address (6 bytes)
+  uint32 hb_seq = 1;         // Incremented each heartbeat
+  uint32 uptime_s = 2;       // Seconds since boot
+  uint32 free_heap = 3;      // Current free heap [bytes]
+  uint32 min_free_heap = 4;  // Minimum free heap since boot [bytes]
+  int64 tx_count = 5;        // Total frames transmitted
+  int64 rx_count = 6;        // Total frames received
+  uint32 rx_dropped = 7;     // Frames dropped on receive
+  bytes src_mac = 8;         // MAC address (6 bytes)
+  string version = 9;        // Firmware version string (e.g. "1.0.0")
 }
 
 // ----------------------------------------------
 // Frame - raw 802.11 frame (no FCS)
 // ----------------------------------------------
 message Frame {
-    bytes frame_data = 1; // Raw 802.11 frame (header + payload, no FCS)
+  bytes frame_data = 1;  // Raw 802.11 frame (header + payload, no FCS)
 }
 
 // ----------------------------------------------
 // ReceivedFrame - frame + metadata (board -> PC)
 // ----------------------------------------------
 message ReceivedFrame {
-    uint64 timestamp_us = 1; // RX timestamp [us since boot]
-    bytes  src_mac      = 2; // Sender MAC (6 bytes)
-    int32  rssi         = 3; // RSSI [dBm]
-    Frame  frame        = 4; // The received frame
+  uint64 timestamp_us = 1;  // RX timestamp [us since boot]
+  bytes src_mac = 2;        // Sender MAC (6 bytes)
+  int32 rssi = 3;           // RSSI [dBm]
+  Frame frame = 4;          // The received frame
 }
 
 // ----------------------------------------------
 // ToBoard - commands from PC to the board
 // ----------------------------------------------
 message ToBoard {
-    oneof msg {
-        Frame frame      = 1; // 802.11 frame to transmit
-        bool  request_hb = 2; // Request an immediate Heartbeat response
-    }
+  oneof msg {
+    Frame frame = 1;      // 802.11 frame to transmit
+    bool request_hb = 2;  // Request an immediate Heartbeat response
+  }
 }
 
 // ----------------------------------------------
 // FromBoard - messages from board to PC
 // ----------------------------------------------
 message FromBoard {
-    oneof msg {
-        Heartbeat      heartbeat       = 1;
-        ReceivedFrame  received_frame  = 2;
-    }
+  oneof msg {
+    Heartbeat heartbeat = 1;
+    ReceivedFrame received_frame = 2;
+  }
 }
