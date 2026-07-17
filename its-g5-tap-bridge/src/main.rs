@@ -306,10 +306,7 @@ async fn tap_to_serial(mut port: impl AsyncWriteExt + Unpin, tap: Arc<AsyncTap>)
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("warn"),
-    )
-    .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let cli = Cli::parse();
 
     if let Err(e) = run(cli).await {

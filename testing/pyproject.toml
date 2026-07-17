@@ -20,5 +20,10 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/client"]
 
+[tool.ruff]
+# Skip the auto-generated protobuf file — its _NAME variables are valid
+# at runtime through protobuf's descriptor magic.
+exclude = ["src/client/interface_pb2.py"]
+
 [tool.uv.sources]
 scapy-etsi-its = { git = "https://github.com/Boslx/v2x-scapy.git" }

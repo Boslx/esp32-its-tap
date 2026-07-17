@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import struct
 import threading
-from queue import Queue
 from typing import Callable, Optional
 
 import serial

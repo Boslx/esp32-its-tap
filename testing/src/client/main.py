@@ -30,7 +30,6 @@ from pathlib import Path
 try:
     from scapy.data import DLT_IEEE802_11
     from scapy.utils import PcapNgWriter, rdpcap
-    from scapy.layers.dot11 import Dot11, Dot11QoS
 except ImportError:
     print("Error: Could not import Scapy.")
     print("Please run: uv add scapy")
