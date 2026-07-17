@@ -9,6 +9,9 @@
 > **Check local regulations. Use at your own risk.**
 
 A low-cost **IEEE 802.11p (ITS-G5) transceiver** built on the **ESP32-C5** (Seeed Studio XIAO ESP32C5).
+
+[![CI](https://github.com/Boslx/esp32-c5-its-tx/actions/workflows/ci.yml/badge.svg)](https://github.com/Boslx/esp32-c5-its-tx/actions/workflows/ci.yml)
+
 It transmits and receives raw 802.11p frames on **channel 180 (5.9 GHz)** using undocumented Espressif PHY
 functions and a reverse-engineered internal Wi-Fi TX/RX path.
 
@@ -47,7 +50,38 @@ flowchart TB
 
 ## Quick Start
 
-### 1. Flash the firmware
+You can either **build from source** (requires PlatformIO / Rust toolchain) or **download pre-built binaries** from the [GitHub Actions CI](https://github.com/Boslx/esp32-c5-its-tx/actions/workflows/ci.yml) — every push to `main` produces firmware and bridge artifacts.
+
+### Option A - Download pre-built binaries
+
+1. Go to the [Actions tab](https://github.com/Boslx/esp32-c5-its-tx/actions/workflows/ci.yml), click the latest green run, and scroll to **Artifacts**.
+2. Download **`firmware`** (contains `firmware.factory.bin`).
+3. Download **`its-g5-tap-bridge`** (the Linux x86-64 binary).
+
+#### Flash the firmware with esptool
+
+```bash
+# Install esptool if you don't have it
+pip install esptool
+
+# Flash the pre-built factory binary (bundles bootloader, partitions, app)
+esptool.py --chip esp32c5 --port /dev/ttyACM0 --baud 921600 write_flash \
+    0x0 firmware.factory.bin
+```
+
+#### Run the bridge
+
+```bash
+# Make the binary executable and run it (requires sudo for TAP)
+chmod +x its-g5-tap
+sudo ./its-g5-tap --serial /dev/ttyACM0
+```
+
+---
+
+### Option B - Build from source
+
+#### 1. Flash the firmware
 
 ```bash
 cd firmware
@@ -57,23 +91,24 @@ pio run --target upload --environment main
 The firmware starts transmitting and receiving immediately after boot. A heartbeat message (with MAC address,
 uptime, TX/RX counters, and free heap) is sent every 10 seconds.
 
-### 2. Run the tap bridge
+#### 2. Run the tap bridge
 
 ```bash
 cd its-g5-tap-bridge
-sudo -E env PATH="$HOME/.cargo/bin:$PATH" cargo run -- --serial /dev/ttyACM0
+cargo build --release
+sudo ./target/release/its-g5-tap --serial /dev/ttyACM0
 ```
 
 This creates a TAP interface named `its-g5-tap`. All received 802.11p frames are converted to Ethernet and
 written to the TAP; Ethernet frames written to the TAP are converted to 802.11p and transmitted.
 
-### 3. Capture with Wireshark
+### Capture with Wireshark
 
 ```bash
 sudo wireshark -k -i its-g5-tap
 ```
 
-### 4. Integrate with Vanetza
+### Integrate with Vanetza
 
 ```bash
 sudo ./socktap -i its-g5-tap
